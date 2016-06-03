@@ -408,6 +408,23 @@ module Discordrb
       Message.new(JSON.parse(response), self)
     end
 
+    # Sends a temporary text message to a channel given its ID and the message's content.
+    # @param channel_id [Integer] The ID that identifies the channel to send something to.
+    # @param content [String] The text that should be sent as a message. It is limited to 2000 characters (Discord imposed).
+    # @param time [Integer] The time in seconds the message will last.
+    # @param tts [true, false] Whether or not this message should be sent using Discord text-to-speech.
+    # @return [Message] The message that was sent.
+    def send_temp_message(channel_id, content, time == 15, tts = false, server_id = nil)
+      channel_id = channel_id.resolve_id
+      debug("Sending message to #{channel_id} with content '#{content}'")
+
+      response = API.send_message(token, channel_id, content, [], tts, server_id)
+      temp_msg = Message.new(JSON.parse(response), self)
+      sleep(time)
+      temp_msg.delete
+      temp_msg
+    end
+
     # Sends a file to a channel. If it is an image, it will automatically be embedded.
     # @note This executes in a blocking way, so if you're sending long files, be wary of delays.
     # @param channel_id [Integer] The ID that identifies the channel to send something to.
