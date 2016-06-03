@@ -44,6 +44,14 @@ module Discordrb::Events
       @message.channel.send_message(content)
     end
 
+    # Sends a temporary message that lasts set seconds to the channel this message was sent in, right now.
+    # @param content [String] The message to send to the channel
+    # @param time [Integer] The time in seconds that the message will stay
+    # @return [Discordrb::Message] the message that was sent
+    def send_temp_message(content, time: 15)
+      @message.channel.send_temp_message(content time: time)
+    end
+
     # @return [true, false] whether or not this message was sent by the bot itself
     def from_bot?
       @message.user.id == @bot.profile.id
