@@ -904,7 +904,7 @@ module Discordrb
     # @param time [Integer] The time in seconds that the message will stay
     # @return [Discordrb::Message] the message that was sent
     def send_temp_message(content, tts = false, time = 15)
-      @bot.send_temp_message(@id, content, tts, @server && @server.id, time: time)
+      @bot.send_temp_message(@id, content, tts, @server && @server.id, time)
     end
 
     # Sends multiple messages to a channel
