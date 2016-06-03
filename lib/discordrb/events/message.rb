@@ -39,17 +39,19 @@ module Discordrb::Events
     # Sends a message to the channel this message was sent in, right now. It is usually preferable to use {#<<} instead
     # because it avoids rate limiting problems
     # @param content [String] The message to send to the channel
+    # @param tts [true, false] The option whether to send the message using Discord text-to-speech
     # @return [Discordrb::Message] the message that was sent
-    def send_message(content)
-      @message.channel.send_message(content)
+    def send_message(content, tts = false)
+      @message.channel.send_message(content, tts)
     end
 
     # Sends a temporary message that lasts set seconds to the channel this message was sent in, right now.
     # @param content [String] The message to send to the channel
     # @param time [Integer] The time in seconds that the message will stay
+    # @param tts [true, false] The option whether to send the message using Discord text-to-speech
     # @return [Discordrb::Message] the message that was sent
-    def send_temp_message(content, time = 15)
-      @message.channel.send_temp_message(content, time)
+    def send_temp_message(content, time = 15, tts = nil)
+      @message.channel.send_temp_message(content, time, tts)
     end
 
     # @return [true, false] whether or not this message was sent by the bot itself
