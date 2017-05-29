@@ -1,6 +1,9 @@
 # frozen_string_literal: true
 
 require 'discordrb/api'
+require 'discordrb/api/server'
+require 'discordrb/api/invite'
+require 'discordrb/api/user'
 require 'discordrb/data'
 
 module Discordrb
@@ -12,12 +15,26 @@ module Discordrb
     def init_cache
       @users = {}
 
+      @voice_regions = {}
+
       @servers = {}
 
       @channels = {}
-      @private_channels = {}
+      @pm_channels = {}
 
       @restricted_channels = []
+    end
+
+    # Returns or caches the available voice regions
+    def voice_regions
+      return @voice_regions unless @voice_regions.empty?
+
+      regions = JSON.parse API.voice_regions(token)
+      regions.each do |data|
+        @voice_regions[data['id']] = VoiceRegion.new(data)
+      end
+
+      @voice_regions
     end
 
     # Gets a channel given its ID. This queries the internal channel cache, and if the channel doesn't
@@ -36,7 +53,7 @@ module Discordrb
 
       begin
         begin
-          response = API.channel(token, id)
+          response = API::Channel.resolve(token, id)
         rescue RestClient::ResourceNotFound
           return nil
         end
@@ -49,6 +66,8 @@ module Discordrb
       end
     end
 
+    alias_method :group_channel, :channel
+
     # Gets a user by its ID.
     # @note This can only resolve users known by the bot (i.e. that share a server with the bot).
     # @param id [Integer] The user ID that should be resolved.
@@ -59,7 +78,7 @@ module Discordrb
 
       LOGGER.out("Resolving user #{id}")
       begin
-        response = API.user(token, id)
+        response = API::User.resolve(token, id)
       rescue RestClient::ResourceNotFound
         return nil
       end
@@ -77,7 +96,7 @@ module Discordrb
 
       LOGGER.out("Resolving server #{id}")
       begin
-        response = API.server(token, id)
+        response = API::Server.resolve(token, id)
       rescue RestClient::ResourceNotFound
         return nil
       end
@@ -85,20 +104,21 @@ module Discordrb
       @servers[id] = server
     end
 
-    # Gets a member by both IDs
-    # @param server_id [Integer] The server ID for which a member should be resolved
+    # Gets a member by both IDs, or `Server` and user ID.
+    # @param server_or_id [Server, Integer] The `Server` or server ID for which a member should be resolved
     # @param user_id [Integer] The ID of the user that should be resolved
     # @return [Member, nil] The member identified by the IDs, or `nil` if none could be found
-    def member(server_id, user_id)
-      server_id = server_id.resolve_id
+    def member(server_or_id, user_id)
+      server_id = server_or_id.resolve_id
       user_id = user_id.resolve_id
 
-      server = self.server(server_id)
+      server = server_or_id.is_a?(Server) ? server_or_id : self.server(server_id)
+
       return server.member(user_id) if server.member_cached?(user_id)
 
       LOGGER.out("Resolving member #{server_id} on server #{user_id}")
       begin
-        response = API.member(token, server_id, user_id)
+        response = API::Server.resolve_member(token, server_id, user_id)
       rescue RestClient::ResourceNotFound
         return nil
       end
@@ -106,20 +126,21 @@ module Discordrb
       server.cache_member(member)
     end
 
-    # Creates a private channel for the given user ID, or if one exists already, returns that one.
+    # Creates a PM channel for the given user ID, or if one exists already, returns that one.
     # It is recommended that you use {User#pm} instead, as this is mainly for internal use. However,
     # usage of this method may be unavoidable if only the user ID is known.
     # @param id [Integer] The user ID to generate a private channel for.
     # @return [Channel] A private channel for that user.
-    def private_channel(id)
+    def pm_channel(id)
       id = id.resolve_id
-      debug("Creating private channel with user id #{id}")
-      return @private_channels[id] if @private_channels[id]
-
-      response = API.create_private(token, @profile.id, id)
+      return @pm_channels[id] if @pm_channels[id]
+      debug("Creating pm channel with user id #{id}")
+      response = API::User.create_pm(token, id)
       channel = Channel.new(JSON.parse(response), self)
-      @private_channels[id] = channel
+      @pm_channels[id] = channel
     end
+
+    alias_method :private_channel, :pm_channel
 
     # Ensures a given user object is cached and if not, cache it from the given data hash.
     # @param data [Hash] A data hash representing a user.
@@ -158,15 +179,7 @@ module Discordrb
     # Requests member chunks for a given server ID.
     # @param id [Integer] The server ID to request chunks for.
     def request_chunks(id)
-      chunk_packet = {
-        op: 8,
-        d: {
-          guild_id: id,
-          query: '',
-          limit: 0
-        }
-      }.to_json
-      @ws.send(chunk_packet)
+      @gateway.send_request_members(id, '', 0)
     end
 
     # Gets the code for an invite.
@@ -189,13 +202,13 @@ module Discordrb
     # @return [Invite] The invite with information about the given invite URL.
     def invite(invite)
       code = resolve_invite_code(invite)
-      Invite.new(JSON.parse(API.resolve_invite(token, code)), self)
+      Invite.new(JSON.parse(API::Invite.resolve(token, code)), self)
     end
 
     # Finds a channel given its name and optionally the name of the server it is in.
     # @param channel_name [String] The channel to search for.
     # @param server_name [String] The server to search for, or `nil` if only the channel should be searched for.
-    # @param type [String, nil] The type of channel to search for (`'text'` or `'voice'`), or `nil` if either type of
+    # @param type [Integer, nil] The type of channel to search for (0: text, 1: private, 2: voice, 3: group), or `nil` if any type of
     #   channel should be searched for
     # @return [Array<Channel>] The array of channels that were found. May be empty if none were found.
     def find_channel(channel_name, server_name = nil, type: nil)

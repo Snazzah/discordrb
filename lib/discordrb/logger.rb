@@ -9,11 +9,20 @@ module Discordrb
     # @return [true, false] whether this logger is in extra-fancy mode!
     attr_writer :fancy
 
+    # @return [String, nil] The bot token to be redacted or nil if it shouldn't.
+    attr_writer :token
+
+    # @return [Array<IO>, Array<#puts & #flush>] the streams the logger should write to.
+    attr_accessor :streams
+
     # Creates a new logger.
     # @param fancy [true, false] Whether this logger uses fancy mode (ANSI escape codes to make the output colourful)
-    def initialize(fancy = false)
+    # @param streams [Array<IO>, Array<#puts & #flush>] the streams the logger should write to.
+    def initialize(fancy = false, streams = [STDOUT])
       @fancy = fancy
       self.mode = :normal
+
+      @streams = streams
     end
 
     # The modes this logger can have. This is probably useless unless you want to write your own Logger
@@ -24,7 +33,8 @@ module Discordrb
       warn: { long: 'WARN', short: '!', format_code: "\u001B[33m" }, # yellow
       error: { long: 'ERROR', short: '✗', format_code: "\u001B[31m" }, # red
       out: { long: 'OUT', short: '→', format_code: "\u001B[36m" }, # cyan
-      in: { long: 'IN', short: '←', format_code: "\u001B[35m" } # purple
+      in: { long: 'IN', short: '←', format_code: "\u001B[35m" }, # purple
+      ratelimit: { long: 'RATELIMIT', short: 'R', format_code: "\u001B[41m" } # red background
     }.freeze
 
     # The ANSI format code that resets formatting
@@ -35,7 +45,7 @@ module Discordrb
 
     MODES.each do |mode, hash|
       define_method(mode) do |message|
-        write(message, hash) if @enabled_modes.include? mode
+        write(message.to_s, hash) if @enabled_modes.include? mode
       end
     end
 
@@ -56,11 +66,11 @@ module Discordrb
     def mode=(value)
       case value
       when :debug
-        @enabled_modes = [:debug, :good, :info, :warn, :error, :out, :in]
+        @enabled_modes = [:debug, :good, :info, :warn, :error, :out, :in, :ratelimit]
       when :verbose
-        @enabled_modes = [:good, :info, :warn, :error, :out, :in]
+        @enabled_modes = [:good, :info, :warn, :error, :out, :in, :ratelimit]
       when :normal
-        @enabled_modes = [:info, :warn, :error]
+        @enabled_modes = [:info, :warn, :error, :ratelimit]
       when :quiet
         @enabled_modes = [:warn, :error]
       when :silent
@@ -80,19 +90,31 @@ module Discordrb
     def write(message, mode)
       thread_name = Thread.current[:discordrb_name]
       timestamp = Time.now.strftime(LOG_TIMESTAMP_FORMAT)
-      if @fancy
-        fancy_write(message, mode, thread_name, timestamp)
-      else
-        simple_write(message, mode, thread_name, timestamp)
+
+      # Redact token if set
+      log = if @token
+              message.to_s.gsub(@token, 'REDACTED_TOKEN')
+            else
+              message.to_s
+            end
+
+      @streams.each do |stream|
+        if @fancy && !stream.is_a?(File)
+          fancy_write(stream, log, mode, thread_name, timestamp)
+        else
+          simple_write(stream, log, mode, thread_name, timestamp)
+        end
       end
     end
 
-    def fancy_write(message, mode, thread_name, timestamp)
-      puts "#{timestamp} #{FORMAT_BOLD}#{thread_name.ljust(16)}#{FORMAT_RESET} #{mode[:format_code]}#{mode[:short]}#{FORMAT_RESET} #{message}"
+    def fancy_write(stream, message, mode, thread_name, timestamp)
+      stream.puts "#{timestamp} #{FORMAT_BOLD}#{thread_name.ljust(16)}#{FORMAT_RESET} #{mode[:format_code]}#{mode[:short]}#{FORMAT_RESET} #{message}"
+      stream.flush
     end
 
-    def simple_write(message, mode, thread_name, timestamp)
-      puts "[#{mode[:long]} : #{thread_name} @ #{timestamp}] #{message}"
+    def simple_write(stream, message, mode, thread_name, timestamp)
+      stream.puts "[#{mode[:long]} : #{thread_name} @ #{timestamp}] #{message}"
+      stream.flush
     end
   end
 end

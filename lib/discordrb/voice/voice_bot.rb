@@ -152,11 +152,18 @@ module Discordrb::Voice
     end
 
     # Stops the current playback entirely.
-    def stop_playing
+    # @param wait_for_confirmation [true, false] Whether the method should wait for confirmation from the playback
+    #   method that the playback has actually stopped.
+    def stop_playing(wait_for_confirmation = false)
       @was_playing_before = @playing
       @speaking = false
       @playing = false
       sleep IDEAL_LENGTH / 1000.0 if @was_playing_before
+
+      return unless wait_for_confirmation
+      @has_stopped_playing = false
+      sleep IDEAL_LENGTH / 1000.0 until @has_stopped_playing
+      @has_stopped_playing = false
     end
 
     # Permanently disconnects from the voice channel; to reconnect you will have to call {Bot#voice_connect} again.
@@ -172,7 +179,7 @@ module Discordrb::Voice
     # methods in separate threads.
     # @param encoded_io [IO] A stream of raw PCM data (s16le)
     def play(encoded_io)
-      stop_playing if @playing
+      stop_playing(true) if @playing
       @retry_attempts = 3
       @first_packet = true
 
@@ -186,13 +193,13 @@ module Discordrb::Voice
           raise IOError, 'File or stream not found!' if @first_packet
 
           @bot.debug('EOF while reading, breaking immediately')
-          break
+          next :stop
         end
 
         # Check whether the buffer has enough data
         if !buf || buf.length != DATA_LENGTH
           @bot.debug("No data is available! Retrying #{@retry_attempts} more times")
-          break if @retry_attempts == 0
+          next :stop if @retry_attempts.zero?
 
           @retry_attempts -= 1
           next
@@ -226,15 +233,15 @@ module Discordrb::Voice
     # Plays an encoded audio file of arbitrary format to the channel.
     # @see Encoder#encode_file
     # @see #play
-    def play_file(file)
-      play @encoder.encode_file(file)
+    def play_file(file, options = '')
+      play @encoder.encode_file(file, options)
     end
 
     # Plays a stream of encoded audio data of arbitrary format to the channel.
     # @see Encoder#encode_io
     # @see #play
-    def play_io(io)
-      play @encoder.encode_io(io)
+    def play_io(io, options = '')
+      play @encoder.encode_io(io, options)
     end
 
     # Plays a stream of audio data in the DCA format. This format has the advantage that no recoding has to be
@@ -245,7 +252,7 @@ module Discordrb::Voice
     # @see https://github.com/bwmarrin/dca
     # @see #play
     def play_dca(file)
-      stop_playing if @playing
+      stop_playing(true) if @playing
 
       @bot.debug "Reading DCA file #{file}"
       input_stream = open(file)
@@ -265,7 +272,7 @@ module Discordrb::Voice
 
           unless header_str
             @bot.debug 'Finished DCA parsing (header is nil)'
-            break
+            next :stop
           end
 
           header = header_str.unpack('s<')[0]
@@ -273,7 +280,7 @@ module Discordrb::Voice
           raise 'Negative header in DCA file! Your file is likely corrupted.' if header < 0
         rescue EOFError
           @bot.debug 'Finished DCA parsing (EOFError)'
-          break
+          next :stop
         end
 
         # Read bytes
@@ -316,6 +323,11 @@ module Discordrb::Voice
 
         # Get packet data
         buf = yield
+
+        # Stop doing anything if the stop signal was sent
+        break if buf == :stop
+
+        # Proceed to the next packet if we got nil
         next unless buf
 
         # Track intermediate adjustment so we can measure how much encoding contributes to the total time
@@ -356,7 +368,7 @@ module Discordrb::Voice
           # Wait `length` ms, then send the next packet
           sleep @length / 1000.0
         else
-          Discordrb::Logger.warn('Audio encoding and sending together took longer than Discord expects one packet to be (20 ms)! This may be indicative of network problems.')
+          Discordrb::LOGGER.warn('Audio encoding and sending together took longer than Discord expects one packet to be (20 ms)! This may be indicative of network problems.')
         end
       end
 
@@ -374,12 +386,15 @@ module Discordrb::Voice
 
       # Final cleanup
       stop_playing
+
+      # Notify any stop_playing methods running right now that we have actually stopped
+      @has_stopped_playing = true
     end
 
     # Increment sequence and time
     def increment_packet_headers
-      (@sequence + 10 < 65_535) ? @sequence += 1 : @sequence = 0
-      (@time + 9600 < 4_294_967_295) ? @time += 960 : @time = 0
+      @sequence + 10 < 65_535 ? @sequence += 1 : @sequence = 0
+      @time + 9600 < 4_294_967_295 ? @time += 960 : @time = 0
     end
   end
 end

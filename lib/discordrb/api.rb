@@ -2,13 +2,14 @@
 
 require 'rest-client'
 require 'json'
+require 'time'
 
 require 'discordrb/errors'
 
 # List of methods representing endpoints in Discord's API
 module Discordrb::API
   # The base URL of the Discord REST API.
-  APIBASE = 'https://discordapp.com/api'.freeze
+  APIBASE = 'https://discordapp.com/api/v6'.freeze
 
   module_function
 
@@ -32,6 +33,13 @@ module Discordrb::API
     @bot_name = value
   end
 
+  # Changes the rate limit tracing behaviour. If rate limit tracing is on, a full backtrace will be logged on every RL
+  # hit.
+  # @param value [true, false] whether or not to enable rate limit tracing
+  def trace=(value)
+    @trace = value
+  end
+
   # Generate a user agent identifying this requester as discordrb.
   def user_agent
     # This particular string is required by the Discord devs.
@@ -44,6 +52,18 @@ module Discordrb::API
   # Resets all rate limit mutexes
   def reset_mutexes
     @mutexes = {}
+    @global_mutex = Mutex.new
+  end
+
+  # Wait a specified amount of time synchronised with the specified mutex.
+  def sync_wait(time, mutex)
+    mutex.synchronize { sleep time }
+  end
+
+  # Wait for a specified mutex to unlock and do nothing with it afterwards.
+  def mutex_wait(mutex)
+    mutex.lock
+    mutex.unlock
   end
 
   # Performs a RestClient request.
@@ -58,33 +78,52 @@ module Discordrb::API
     retry
   end
 
-  # Make an API request. Utility function to implement message queueing
-  # in the future
-  def request(key, type, *attributes)
+  # Make an API request, including rate limit handling.
+  def request(key, major_parameter, type, *attributes)
     # Add a custom user agent
     attributes.last[:user_agent] = user_agent if attributes.last.is_a? Hash
 
-    begin
-      if key
-        @mutexes[key] = Mutex.new unless @mutexes[key]
+    # The most recent Discord rate limit requirements require the support of major parameters, where a particular route
+    # and major parameter combination (*not* the HTTP method) uniquely identifies a RL bucket.
+    key = [key, major_parameter].freeze
 
-        # Lock and unlock, i. e. wait for the mutex to unlock and don't do anything with it afterwards
-        @mutexes[key].lock
-        @mutexes[key].unlock
-      end
+    begin
+      mutex = @mutexes[key] ||= Mutex.new
+
+      # Lock and unlock, i. e. wait for the mutex to unlock and don't do anything with it afterwards
+      mutex_wait(mutex)
+
+      # If the global mutex happens to be locked right now, wait for that as well.
+      mutex_wait(@global_mutex) if @global_mutex.locked?
 
       response = raw_request(type, attributes)
-    rescue RestClient::TooManyRequests => e
-      raise "Got an HTTP 429 for an untracked API call! Please report this bug together with the following information: #{type} #{attributes}" unless key
 
-      unless @mutexes[key].locked?
+      if response.headers[:x_ratelimit_remaining] == '0' && !mutex.locked?
+        Discordrb::LOGGER.ratelimit "RL bucket depletion detected! Date: #{response.headers[:date]} Reset: #{response.headers[:x_ratelimit_reset]}"
+
+        now = Time.rfc2822(response.headers[:date])
+        reset = Time.at(response.headers[:x_ratelimit_reset].to_i)
+
+        delta = reset - now
+
+        Discordrb::LOGGER.ratelimit("Locking RL mutex (key: #{key}) for #{delta} seconds preemptively")
+        trace("preemptive #{key.join(' ')}")
+
+        sync_wait(delta, mutex)
+      end
+    rescue RestClient::TooManyRequests => e
+      # If the 429 is from the global RL, then we have to use the global mutex instead.
+      mutex = @global_mutex if e.response.headers[:x_ratelimit_global] == 'true'
+
+      unless mutex.locked?
         response = JSON.parse(e.response)
         wait_seconds = response['retry_after'].to_i / 1000.0
-        Discordrb::LOGGER.warn("Locking RL mutex (key: #{key}) for #{wait_seconds} seconds due to Discord rate limiting")
+        Discordrb::LOGGER.ratelimit("Locking RL mutex (key: #{key}) for #{wait_seconds} seconds due to Discord rate limiting")
+        trace("429 #{key.join(' ')}")
 
         # Wait the required time synchronized by the mutex (so other incoming requests have to wait) but only do it if
         # the mutex isn't locked already so it will only ever wait once
-        @mutexes[key].synchronize { sleep wait_seconds }
+        sync_wait(wait_seconds, mutex)
       end
 
       retry
@@ -93,9 +132,20 @@ module Discordrb::API
     response
   end
 
-  # Make an avatar URL from the user and avatar IDs
-  def avatar_url(user_id, avatar_id)
-    "#{api_base}/users/#{user_id}/avatars/#{avatar_id}.jpg"
+  # Perform rate limit tracing. All this method does is log the current backtrace to the console with the `:ratelimit`
+  # level.
+  # @param reason [String] the reason to include with the backtrace.
+  def trace(reason)
+    unless @trace
+      Discordrb::LOGGER.debug("trace was called with reason #{reason}, but tracing is not enabled")
+      return
+    end
+
+    Discordrb::LOGGER.ratelimit("Trace (#{reason}):")
+
+    caller.each do |str|
+      Discordrb::LOGGER.ratelimit(' ' + str)
+    end
   end
 
   # Make an icon URL from server and icon IDs
@@ -103,87 +153,31 @@ module Discordrb::API
     "#{api_base}/guilds/#{server_id}/icons/#{icon_id}.jpg"
   end
 
-  # Ban a user from a server and delete their messages from the last message_days days
-  def ban_user(token, server_id, user_id, message_days)
-    request(
-      __method__,
-      :put,
-      "#{api_base}/guilds/#{server_id}/bans/#{user_id}?delete-message-days=#{message_days}",
-      nil,
-      Authorization: token
-    )
+  # Make an icon URL from application and icon IDs
+  def app_icon_url(app_id, icon_id)
+    "https://cdn.discordapp.com/app-icons/#{app_id}/#{icon_id}.jpg"
   end
 
-  # Unban a user from a server
-  def unban_user(token, server_id, user_id)
-    request(
-      __method__,
-      :delete,
-      "#{api_base}/guilds/#{server_id}/bans/#{user_id}",
-      Authorization: token
-    )
+  # Make a widget picture URL from server ID
+  def widget_url(server_id, style = 'shield')
+    "#{api_base}/guilds/#{server_id}/widget.png?style=#{style}"
   end
 
-  # Kick a user from a server
-  def kick_user(token, server_id, user_id)
-    request(
-      __method__,
-      :delete,
-      "#{api_base}/guilds/#{server_id}/members/#{user_id}",
-      Authorization: token
-    )
+  # Make a splash URL from server and splash IDs
+  def splash_url(server_id, splash_id)
+    "https://cdn.discordapp.com/splashes/#{server_id}/#{splash_id}.jpg"
   end
 
-  # Move a user to a different voice channel
-  def move_user(token, server_id, user_id, channel_id)
-    request(
-      __method__,
-      :patch,
-      "#{api_base}/guilds/#{server_id}/members/#{user_id}",
-      { channel_id: channel_id }.to_json,
-      Authorization: token,
-      content_type: :json
-    )
-  end
-
-  # Change the current bot's nickname on a server
-  def change_own_nickname(token, server_id, nick)
-    request(
-      __method__,
-      :patch,
-      "#{api_base}/guilds/#{server_id}/members/@me/nick",
-      { nick: nick }.to_json,
-      Authorization: token,
-      content_type: :json
-    )
-  end
-
-  # Change a user's nickname on a server
-  def change_nickname(token, server_id, user_id, nick)
-    request(
-      __method__,
-      :patch,
-      "#{api_base}/guilds/#{server_id}/members/#{user_id}",
-      { nick: nick }.to_json,
-      Authorization: token,
-      content_type: :json
-    )
-  end
-
-  # Get a server's banned users
-  def bans(token, server_id)
-    request(
-      __method__,
-      :get,
-      "#{api_base}/guilds/#{server_id}/bans",
-      Authorization: token
-    )
+  # Make an emoji icon URL from emoji ID
+  def emoji_icon_url(emoji_id)
+    "https://cdn.discordapp.com/emojis/#{emoji_id}.png"
   end
 
   # Login to the server
   def login(email, password)
     request(
-      __method__,
+      :auth_login,
+      nil,
       :post,
       "#{api_base}/auth/login",
       email: email,
@@ -194,7 +188,8 @@ module Discordrb::API
   # Logout from the server
   def logout(token)
     request(
-      __method__,
+      :auth_logout,
+      nil,
       :post,
       "#{api_base}/auth/logout",
       nil,
@@ -205,7 +200,8 @@ module Discordrb::API
   # Create an OAuth application
   def create_oauth_application(token, name, redirect_uris)
     request(
-      __method__,
+      :oauth2_applications,
+      nil,
       :post,
       "#{api_base}/oauth2/applications",
       { name: name, redirect_uris: redirect_uris }.to_json,
@@ -217,7 +213,8 @@ module Discordrb::API
   # Change an OAuth application's properties
   def update_oauth_application(token, name, redirect_uris, description = '', icon = nil)
     request(
-      __method__,
+      :oauth2_applications,
+      nil,
       :put,
       "#{api_base}/oauth2/applications",
       { name: name, redirect_uris: redirect_uris, description: description, icon: icon }.to_json,
@@ -226,248 +223,13 @@ module Discordrb::API
     )
   end
 
-  # Create a server
-  def create_server(token, name, region = :london)
+  # Get the bot's OAuth application's information
+  def oauth_application(token)
     request(
-      __method__,
-      :post,
-      "#{api_base}/guilds",
-      { name: name, region: region.to_s }.to_json,
-      Authorization: token,
-      content_type: :json
-    )
-  end
-
-  # Update a server
-  def update_server(token, server_id, name, region, icon, afk_channel_id, afk_timeout)
-    request(
-      __method__,
-      :patch,
-      "#{api_base}/guilds/#{server_id}",
-      { name: name, region: region, icon: icon, afk_channel_id: afk_channel_id, afk_timeout: afk_timeout }.to_json,
-      Authorization: token,
-      content_type: :json
-    )
-  end
-
-  # Transfer server ownership
-  def transfer_ownership(token, server_id, user_id)
-    request(
-      __method__,
-      :patch,
-      "#{api_base}/guilds/#{server_id}",
-      { owner_id: user_id }.to_json,
-      Authorization: token,
-      content_type: :json
-    )
-  end
-
-  # Delete a server
-  def delete_server(token, server_id)
-    request(
-      __method__,
-      :delete,
-      "#{api_base}/guilds/#{server_id}",
-      Authorization: token
-    )
-  end
-
-  # Leave a server
-  def leave_server(token, server_id)
-    request(
-      __method__,
-      :delete,
-      "#{api_base}/users/@me/guilds/#{server_id}",
-      Authorization: token
-    )
-  end
-
-  # Get a channel's data
-  def channel(token, channel_id)
-    request(
-      __method__,
-      :get,
-      "#{api_base}/channels/#{channel_id}",
-      Authorization: token
-    )
-  end
-
-  # Get a server's data
-  def server(token, server_id)
-    request(
-      __method__,
-      :get,
-      "#{api_base}/guilds/#{server_id}",
-      Authorization: token
-    )
-  end
-
-  # Get a member's data
-  def member(token, server_id, user_id)
-    request(
-      __method__,
-      :get,
-      "#{api_base}/guilds/#{server_id}/members/#{user_id}",
-      Authorization: token
-    )
-  end
-
-  # Create a channel
-  def create_channel(token, server_id, name, type)
-    request(
-      __method__,
-      :post,
-      "#{api_base}/guilds/#{server_id}/channels",
-      { name: name, type: type }.to_json,
-      Authorization: token,
-      content_type: :json
-    )
-  end
-
-  # Update a channel's data
-  def update_channel(token, channel_id, name, topic, position = 0)
-    request(
-      __method__,
-      :patch,
-      "#{api_base}/channels/#{channel_id}",
-      { name: name, position: position, topic: topic }.to_json,
-      Authorization: token,
-      content_type: :json
-    )
-  end
-
-  # Delete a channel
-  def delete_channel(token, channel_id)
-    request(
-      __method__,
-      :delete,
-      "#{api_base}/channels/#{channel_id}",
-      Authorization: token
-    )
-  end
-
-  # Join a server using an invite
-  def join_server(token, invite_code)
-    request(
-      __method__,
-      :post,
-      "#{api_base}/invite/#{invite_code}",
+      :oauth2_applications_me,
       nil,
-      Authorization: token
-    )
-  end
-
-  # Resolve an invite
-  def resolve_invite(token, invite_code)
-    request(
-      __method__,
       :get,
-      "#{api_base}/invite/#{invite_code}",
-      Authorization: token
-    )
-  end
-
-  # Create a private channel
-  def create_private(token, bot_user_id, user_id)
-    request(
-      __method__,
-      :post,
-      "#{api_base}/users/#{bot_user_id}/channels",
-      { recipient_id: user_id }.to_json,
-      Authorization: token,
-      content_type: :json
-    )
-  rescue RestClient::BadRequest
-    raise 'Attempted to PM the bot itself!'
-  end
-
-  # Create an instant invite from a server or a channel id
-  def create_invite(token, channel_id, max_age = 0, max_uses = 0, temporary = false, xkcd = false)
-    request(
-      __method__,
-      :post,
-      "#{api_base}/channels/#{channel_id}/invites",
-      { max_age: max_age, max_uses: max_uses, temporary: temporary, xkcdpass: xkcd }.to_json,
-      Authorization: token,
-      content_type: :json
-    )
-  end
-
-  # Delete an invite by code
-  def delete_invite(token, code)
-    request(
-      __method__,
-      :delete,
-      "#{api_base}/invites/#{code}",
-      Authorization: token
-    )
-  end
-
-  # Send a message to a channel
-  def send_message(token, channel_id, message, mentions = [], tts = false, guild_id = nil)
-    request(
-      "message-#{guild_id}".to_sym,
-      :post,
-      "#{api_base}/channels/#{channel_id}/messages",
-      { content: message, mentions: mentions, tts: tts }.to_json,
-      Authorization: token,
-      content_type: :json
-    )
-  rescue RestClient::InternalServerError
-    raise Discordrb::Errors::MessageTooLong, "Message over the character limit (#{message.length} > 2000)"
-  end
-
-  # Delete a message
-  def delete_message(token, channel_id, message_id)
-    request(
-      __method__,
-      :delete,
-      "#{api_base}/channels/#{channel_id}/messages/#{message_id}",
-      Authorization: token
-    )
-  end
-
-  # Delete messages in bulk
-  def bulk_delete(token, channel_id, messages = [])
-    request(
-      __method__,
-      :post,
-      "#{api_base}/channels/#{channel_id}/messages/bulk_delete",
-      { messages: messages }.to_json,
-      Authorization: token,
-      content_type: :json
-    )
-  end
-
-  # Edit a message
-  def edit_message(token, channel_id, message_id, message, mentions = [])
-    request(
-      :message,
-      :patch,
-      "#{api_base}/channels/#{channel_id}/messages/#{message_id}",
-      { content: message, mentions: mentions }.to_json,
-      Authorization: token,
-      content_type: :json
-    )
-  end
-
-  # Pin a message
-  def pin_message(token, channel_id, message_id)
-    request(
-      __method__,
-      :put,
-      "#{api_base}/channels/#{channel_id}/pins/#{message_id}",
-      nil,
-      Authorization: token
-    )
-  end
-
-  # Unpin a message
-  def unpin_message(token, channel_id, message_id)
-    request(
-      __method__,
-      :delete,
-      "#{api_base}/channels/#{channel_id}/pins/#{message_id}",
+      "#{api_base}/oauth2/applications/@me",
       Authorization: token
     )
   end
@@ -477,7 +239,8 @@ module Discordrb::API
   # so this is an easy way to catch up on messages
   def acknowledge_message(token, channel_id, message_id)
     request(
-      __method__,
+      :channels_cid_messages_mid_ack,
+      nil, # This endpoint is unavailable for bot accounts and thus isn't subject to its rate limit requirements.
       :post,
       "#{api_base}/channels/#{channel_id}/messages/#{message_id}/ack",
       nil,
@@ -485,117 +248,11 @@ module Discordrb::API
     )
   end
 
-  # Send a file as a message to a channel
-  def send_file(token, channel_id, file, caption: nil, tts: false)
-    request(
-      __method__,
-      :post,
-      "#{api_base}/channels/#{channel_id}/messages",
-      { file: file, content: caption, tts: tts },
-      Authorization: token
-    )
-  end
-
-  # Create a role (parameters such as name and colour will have to be set by update_role afterwards)
-  def create_role(token, server_id)
-    request(
-      __method__,
-      :post,
-      "#{api_base}/guilds/#{server_id}/roles",
-      nil,
-      Authorization: token
-    )
-  end
-
-  # Update a role
-  # Permissions are the Discord defaults; allowed: invite creation, reading/sending messages,
-  # sending TTS messages, embedding links, sending files, reading the history, mentioning everybody,
-  # connecting to voice, speaking and voice activity (push-to-talk isn't mandatory)
-  def update_role(token, server_id, role_id, name, colour, hoist = false, mentionable = false, packed_permissions = 36_953_089)
-    request(
-      __method__,
-      :patch,
-      "#{api_base}/guilds/#{server_id}/roles/#{role_id}",
-      { color: colour, name: name, hoist: hoist, mentionable: mentionable, permissions: packed_permissions }.to_json,
-      Authorization: token,
-      content_type: :json
-    )
-  end
-
-  # Delete a role
-  def delete_role(token, server_id, role_id)
-    request(
-      __method__,
-      :delete,
-      "#{api_base}/guilds/#{server_id}/roles/#{role_id}",
-      Authorization: token
-    )
-  end
-
-  # Update a user's roles
-  def update_user_roles(token, server_id, user_id, roles)
-    request(
-      __method__,
-      :patch,
-      "#{api_base}/guilds/#{server_id}/members/#{user_id}",
-      { roles: roles }.to_json,
-      Authorization: token,
-      content_type: :json
-    )
-  end
-
-  # Update a user's server deafened state
-  def update_user_deafen(token, server_id, user_id, state)
-    request(
-      __method__,
-      :patch,
-      "#{api_base}/guilds/#{server_id}/members/#{user_id}",
-      { deaf: state }.to_json,
-      Authorization: token,
-      content_type: :json
-    )
-  end
-
-  # Update a user's server muted state
-  def update_user_mute(token, server_id, user_id, state)
-    request(
-      __method__,
-      :patch,
-      "#{api_base}/guilds/#{server_id}/members/#{user_id}",
-      { mute: state }.to_json,
-      Authorization: token,
-      content_type: :json
-    )
-  end
-
-  # Update a user's permission overrides in a channel
-  def update_user_overrides(token, channel_id, user_id, allow, deny)
-    request(
-      __method__,
-      :put,
-      "#{api_base}/channels/#{channel_id}/permissions/#{user_id}",
-      { type: 'member', id: user_id, allow: allow, deny: deny }.to_json,
-      Authorization: token,
-      content_type: :json
-    )
-  end
-
-  # Update a role's permission overrides in a channel
-  def update_role_overrides(token, channel_id, role_id, allow, deny)
-    request(
-      __method__,
-      :put,
-      "#{api_base}/channels/#{channel_id}/permissions/#{role_id}",
-      { type: 'role', id: role_id, allow: allow, deny: deny }.to_json,
-      Authorization: token,
-      content_type: :json
-    )
-  end
-
   # Get the gateway to be used
   def gateway(token)
     request(
-      __method__,
+      :gateway,
+      nil,
       :get,
       "#{api_base}/gateway",
       Authorization: token
@@ -605,7 +262,8 @@ module Discordrb::API
   # Validate a token (this request will fail if the token is invalid)
   def validate_token(token)
     request(
-      __method__,
+      :auth_login,
+      nil,
       :post,
       "#{api_base}/auth/login",
       {}.to_json,
@@ -614,86 +272,15 @@ module Discordrb::API
     )
   end
 
-  # Start typing (needs to be resent every 5 seconds to keep up the typing)
-  def start_typing(token, channel_id)
+  # Get a list of available voice regions
+  def voice_regions(token)
     request(
-      __method__,
-      :post,
-      "#{api_base}/channels/#{channel_id}/typing",
+      :voice_regions,
       nil,
-      Authorization: token
-    )
-  end
-
-  # Get user data
-  def user(token, user_id)
-    request(
-      __method__,
       :get,
-      "#{api_base}/users/#{user_id}",
-      Authorization: token
-    )
-  end
-
-  # Get profile data
-  def profile(token)
-    request(
-      __method__,
-      :get,
-      "#{api_base}/users/@me",
-      Authorization: token
-    )
-  end
-
-  # Get information about a user's connections
-  def connections(token)
-    request(
-      __method__,
-      :get,
-      "#{api_base}/users/@me/connections",
-      Authorization: token
-    )
-  end
-
-  # Update user data
-  def update_user(token, email, password, new_username, avatar, new_password = nil)
-    request(
-      __method__,
-      :patch,
-      "#{api_base}/users/@me",
-      { avatar: avatar, email: email, new_password: new_password, password: password, username: new_username }.to_json,
+      "#{api_base}/voice/regions",
       Authorization: token,
       content_type: :json
-    )
-  end
-
-  # Get the servers a user is connected to
-  def servers(token)
-    request(
-      __method__,
-      :get,
-      "#{api_base}/users/@me/guilds",
-      Authorization: token
-    )
-  end
-
-  # Get a list of messages from a channel's history
-  def channel_log(token, channel_id, amount, before = nil, after = nil)
-    request(
-      __method__,
-      :get,
-      "#{api_base}/channels/#{channel_id}/messages?limit=#{amount}#{"&before=#{before}" if before}#{"&after=#{after}" if after}",
-      Authorization: token
-    )
-  end
-
-  # Get a list of pinned messages in a channel
-  def pins(token, channel_id)
-    request(
-      __method__,
-      :get,
-      "#{api_base}/channels/#{channel_id}/pins",
-      Authorization: token
     )
   end
 end

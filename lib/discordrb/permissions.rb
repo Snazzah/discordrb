@@ -10,10 +10,10 @@ module Discordrb
       0 => :create_instant_invite, # 1
       1 => :kick_members,          # 2
       2 => :ban_members,           # 4
-      3 => :manage_roles,          # 8, also Manage Permissions
+      3 => :administrator,         # 8
       4 => :manage_channels,       # 16
       5 => :manage_server,         # 32
-      # 6                          # 64
+      6 => :add_reactions,         # 64
       # 7                          # 128
       # 8                          # 256
       # 9                          # 512
@@ -25,7 +25,7 @@ module Discordrb
       15 => :attach_files,         # 32768
       16 => :read_message_history, # 65536
       17 => :mention_everyone,     # 131072
-      # 18                         # 262144
+      18 => :use_external_emoji,   # 262144
       # 19                         # 524288
       20 => :connect,              # 1048576
       21 => :speak,                # 2097152
@@ -34,7 +34,10 @@ module Discordrb
       24 => :move_members,         # 16777216
       25 => :use_voice_activity,   # 33554432
       26 => :change_nickname,      # 67108864
-      27 => :manage_nicknames      # 134217728
+      27 => :manage_nicknames,     # 134217728
+      28 => :manage_roles,         # 268435456, also Manage Permissions
+      29 => :manage_webhooks,      # 536870912
+      30 => :manage_emojis         # 1073741824
     }.freeze
 
     Flags.each do |position, flag|
@@ -52,10 +55,12 @@ module Discordrb
       end
     end
 
+    alias_method :can_administrate=, :can_administrator=
+
     attr_reader :bits
 
     # Set the raw bitset of this permission object
-    # @param bits [Fixnum] A number whose binary representation is the desired bitset.
+    # @param bits [Integer] A number whose binary representation is the desired bitset.
     def bits=(bits)
       @bits = bits
       init_vars

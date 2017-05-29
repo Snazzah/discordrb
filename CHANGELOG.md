@@ -1,5 +1,192 @@
 # Changelog
 
+## 3.2.1
+
+- `Bot#stop` and `Gateway#stop` now explicitly return `nil`, for more convenient use in commands
+- The API method to query for users has been removed as the endpoint no longer exists
+- Some more methods have been changed to resolve IDs, which means they can be called with integer and string IDs instead of just the objects ([#313](https://github.com/meew0/discordrb/pull/313), thanks @LikeLakers2)
+- Bulk deleting now uses the new non-deprecated URL – this has no immediate effect, but once the old one will be removed bots using it will not be able to bulk delete anymore (see also [#309](https://github.com/meew0/discordrb/issues/309))
+### Bugfixes
+
+- Fixed another bug with resumes that caused issues when resuming a zombie connection 
+- Fixed a bug that caused issues when playing short files ([#326](https://github.com/meew0/discordrb/issues/316))
+
+## 3.2.0.1
+
+- Attempt to fix an issue that causes a strange problem with dependencies when installing discordrb
+
+## 3.2.0
+
+- Various parts of gateway error handling were improved, leading to significant stability improvements:
+  - A long standing bug was fixed that prevented resumes in most cases, which caused unnecessary reconnections.
+  - The error handler that handles problems with sending the raw data over TCP now catches errors more broadly.
+  - Heartbeat ACKs (opcode 11) are now checked, which allows the client to detect zombie connections early on. If this causes problems for you you can disable it using `bot.gateway.check_heartbeat_acks = false`.
+  - Received heartbeats are now properly handled again
+- Added a client for webhooks, implemented as a separate gem `discordrb-webhooks`. This allows the creation of applications that only use webhooks without the overhead provided by the rest of discordrb. The gem is added as a dependency by normal discordrb so you don't need to install it separately if you're already using that.
+- Adding, updating or deleting custom emoji is now supported ([#285](https://github.com/meew0/discordrb/pull/285), thanks @Daniel-Worrall)
+- Rich embeds can now be sent alongside messages, for example using the `embed` parameter in `send_message`, or with the new method `Channel#send_embed`
+- `advanced_functionality` bots now support escaping using backslashes ([#293](https://github.com/meew0/discordrb/issues/293) / [#304](https://github.com/meew0/discordrb/pull/304), thanks @LikeLakers2)
+- Added type checking and conversion for commands ([#298](https://github.com/meew0/discordrb/pull/298), thanks @ohtaavi)
+- Bulk deleting messages now checks for message age (see also [hammerandchisel/discord-api-docs#208](https://github.com/hammerandchisel/discord-api-docs/issues/208)). By default, it will ignore messages that are too old to be bulk deleted, but there is also a `strict` mode setting now that raises an exception in such a case.
+- Reactions can now be viewed for existing messages ([#262](https://github.com/meew0/discordrb/pull/262), thanks @z64), added to messages ([#266](https://github.com/meew0/discordrb/pull/266), thanks @z64), and listened for using gateway events as well as internal handlers ([#300](https://github.com/meew0/discordrb/issues/300)).
+- Game types and stream URLs are now cached ([#297](https://github.com/meew0/discordrb/issues/297))
+- The default non-streaming game was changed to be `0` instead of `nil` ([#277](https://github.com/meew0/discordrb/pull/277), thanks @zeyla) 
+- A method `Channel#delete_message` was added to support deleting single messages by ID without prior resolution.
+- Permission overwrites can now be deleted from channels ([#268](https://github.com/meew0/discordrb/pull/268), thanks @greenbigfrog)
+- There is now a utility method `IDObject.synthesise` that creates snowflakes with specific timestamps out of thin air.
+- Typing events are now respondable, so you can call `#respond` on them for example ([#270](https://github.com/meew0/discordrb/pull/270), thanks @VxJasonxV)
+- Message authors can now be `User` objects if a `Member` object could not be found or created ([#290](https://github.com/meew0/discordrb/issues/290))
+- Added two new events, `unknown` ([#288](https://github.com/meew0/discordrb/issues/288)) and `raw`, that are raised for unknown dispatches and all dispatches, respectively.
+- Bots can now be set to fully ignore other bots ([#257](https://github.com/meew0/discordrb/pull/257), thanks @greenbigfrog) 
+- Voice state update events now have an `old_channel` property/attribute that denotes the previous channel the user was in in case of joining/moving/leaving.
+- The default help command no longer shows commands the user can't use ([#275](https://github.com/meew0/discordrb/pull/275), thanks @FormalHellhound)
+- Updated the command example to no longer include user-specific stuff ([#260](https://github.com/meew0/discordrb/issues/260))
+- `Server#role` now resolves IDs, so they can be passed as strings if necessary.
+
+### Bugfixes
+
+- Fixed bots' shard settings being ignored in certain cases 
+- Parsing role mentions using `Bot#parse_mention` works properly now.
+- Fixed some specific REST methods that were broken by the API module refactor ([#302](https://github.com/meew0/discordrb/pull/302), thanks @LikeLakers2)
+- Cached channel data is now updated properly on change ([#272](https://github.com/meew0/discordrb/issues/272))
+- Users' avatars are now updated properly on change ([#265](https://github.com/meew0/discordrb/pull/265), thanks @Roughsketch)
+- Fixed voice state tracking for newly created channels ([#292](https://github.com/meew0/discordrb/issues/292))
+- Fixed event attribute handling for PlayingEvent ([#303](https://github.com/meew0/discordrb/pull/303), thanks @sven-strothoff)
+- Getting specific emoji by ID no longer fails to resolve non-cached emoji ([#283](https://github.com/meew0/discordrb/pull/283), thanks @greenbigfrog)
+- Voice state update events no longer fail to be raised for users leaving channels, if the event handler had a channel attribute set ([#301](https://github.com/meew0/discordrb/issues/301))
+- Bots that don't define any events should work properly again
+- Fixed error handling for messages over the character limit ([#276](https://github.com/meew0/discordrb/issues/276))
+- Fixed some specific log messages not being called properly ([#263](https://github.com/meew0/discordrb/pull/263), thanks @Roughsketch)
+- Fixed some edge case bugs in the default help command:
+  - In the case of too many commands to be sent in the channel, it no longer replies with "Sending help in PM!" when called from PM
+  - It no longer fails completely if called from PM if there are any commands that require server-specific checks ([#308](https://github.com/meew0/discordrb/issues/308))
+  - Fixed a slight formatting mistake
+- Quoted command arguments in `advanced_functionality` are no longer split by newline
+- Fixed a specific edge case in command chain handling where handling commands with the same name as the chain delimiter was broken 
+
+## 3.1.1
+
+*Bugfix-only release.*
+
+### Bugfixes
+
+- An oversight where a `GUILD_DELETE` dispatch would cause an internal error was fixed. ([#256](https://github.com/meew0/discordrb/pull/256), thanks @greenbigfrog)
+
+## 3.1.0
+
+- Emoji handling support ([#226](https://github.com/meew0/discordrb/pull/226), thanks @greenbigfrog)
+- A `channels` attribute has been added to `CommandBot` as well as `Command` to restrict the channels in which either of the two works ([#249](https://github.com/meew0/discordrb/pull/249), thanks @Xzanth)
+- The bulk deletion endpoint is now exposed directly using the `Channel#delete_messages` method ([#235](https://github.com/meew0/discordrb/pull/235), thanks @z64)
+- The internal settings fields for user statuses that cause statuses to persist across restarts can now be modified ([#233](https://github.com/meew0/discordrb/pull/233), thanks @Daniel-Worrall)
+- A few examples have been added to the docs ([#250](https://github.com/meew0/discordrb/pull/250), thanks @SunDwarf)
+- The specs have been improved; they're still not exhaustive by far but there are at least slightly more now.
+
+### Bugfixes
+
+- Fixed an important bug that caused the logger not to work in some cases. ([#243](https://github.com/meew0/discordrb/pull/243), thanks @Daniel-Worrall)
+- Fixed logger token redaction.
+- `unavailable_servers` should no longer crash the bot due to being nil in some cases ([#244](https://github.com/meew0/discordrb/pull/244), thanks @Daniel-Worrall)
+- `Profile#on` for member resolution is now no longer overwritten by an alias for `#online` ([#247](https://github.com/meew0/discordrb/pull/247), thanks @Daniel-Worrall)
+- A `CommandBot` without any commands should no longer crash when receiving a message that triggers it ([#242](https://github.com/meew0/discordrb/issues/242))
+- Changing nicknames works again, it has apparently been broken in 3.0.0.
+
+## 3.0.2
+
+- A small change to how CommandBot parameter lists are formatted ([#240](https://github.com/meew0/discordrb/pull/240), thanks @FormalHellhound)
+
+### Bugfixes
+
+- Setting properties on a channel (e.g. `Channel#topic=`) works again ([#238](https://github.com/meew0/discordrb/issues/238) / [#239](https://github.com/meew0/discordrb/pull/239), thanks @Daniel-Worrall)
+
+## 3.0.1
+
+A tiny update to support webhook-sent messages properly!
+
+- Added the utility methods `Message#webhook?` and `User#webhook?` to check whether a message or a user belongs to a webhook
+- Added `Message#webhook_id` to get the ID of the sending webhook for webhook messages
+- Added the `webhook_commands` parameter to CommandBot that, if false (default true), prevents webhook-sent messages from being parsed and handled as commands.
+
+### Bugfixes
+
+- Fixed webhook-sent messages being ignored because their author couldn't be resolved.
+- Fixed a minor performance problem where a CommandBot would create unnecessarily create redundant objects for every received message.
+
+## 3.0.0
+
+I didn't think there could possibly be a release larger than 2.0.0 was, but here it is! Including the respective release commit, there were 540 commits from 1.8.1 to 2.0.0, but a whopping 734 commits from 2.1.3 to 3.0.0.
+
+As with 2.0.0, there are some breaking changes! They are, as always, highlighted in bold.
+
+- **The `application_id` parameter has been renamed to `client_id`**. With the changes to how bot applications work, it would just be confusing to have it be called `application_id` any longer. If you try to use `application_id` now, it will raise a descriptive exception; with 3.1.0 that will be removed too (you'll get a less descriptive exception).
+- The gateway implementation has been completely rewritten, for more performance, stability and maintainability. This means that **to call some internal methods like `inject_reconnect`, a `Gateway` instance (available as `Bot#gateway`) now needs to be used.**
+- **User login using email and password has been removed**. Use a user token instead, see also [here](https://github.com/hammerandchisel/discord-api-docs/issues/69#issuecomment-223886862).
+- In addition to the rewrite, the gateway version has also been upgraded to protocol version 6 (the rewrite was for v5). **With this, the way channel types are handled has been changed a bit!** If you've been using the abstraction methods like `Channel#voice?`, you should be fine though. This also includes support for group chats on user accounts, as that was the only real functionality change on v6. ([#211](https://github.com/meew0/discordrb/pull/211), thanks @Daniel-Worrall)
+- **Custom prefix handlers for `CommandBot`s now get the full message object as their parameter rather than only the content**, for even more flexibility.
+- For internal consistency, **the `UnknownGuild` error was renamed to `UnknownServer`**. I doubt this change affects anyone, but if you handle that error specifically in your bot, make sure to change it.
+- **The API module has undergone a refactor**, if you were using any manual API calls you will have to update them to the new format. Specifically, endpoints dealing with channels have been moved to `API::Channel`, ones dealing with users to `API::User` and so on. ([#203](https://github.com/meew0/discordrb/pull/203), thanks @depl0y)
+- **Calling `users` on a text channel will now only return users who have permission to read it** ([#186](https://github.com/meew0/discordrb/issues/186))
+- A variety of new fields have been added to `Message` objects, specifically embeds (`Message#embeds`), when it was last edited (`#edited_timestamp`), whether it uses TTS (`#tts?`), its nonce (`#nonce`), whether it was ever edited (`#edited?`), and whether it mentions everyone (`mention_everyone?`) ([#206](https://github.com/meew0/discordrb/pull/206), thanks @SnazzyPine25)
+- A variety of new functionality has been added to `Server` and `Channel` objects ([#181](https://github.com/meew0/discordrb/pull/181), thanks @SnazzyPine25):
+  - Bitrate and user limit can now be read and set for voice channels
+  - Server integrations can now be read
+  - Server features and verification level can now be read
+  - Utility functions to generate widget, widget banner and splash URLs
+- Message pinning is now supported, both reading pin status and pinning existing messages ([#145](https://github.com/meew0/discordrb/issues/145) / [#146](https://github.com/meew0/discordrb/pull/146), thanks @hlaaftana)
+- Support for the new available statuses:
+  - `Bot#dnd` to make the bot show up as DnD (red dot)
+  - `Bot#invisible` to make the bot show up as offline
+- Setting the bot's status to streaming is now supported ([#128](https://github.com/meew0/discordrb/pull/128) and [#143](https://github.com/meew0/discordrb/pull/143), thanks @SnazzyPine25 and @barkerja)
+- You can now set a message to be sent when a `CommandBot`'s command fails with a `NoPermission` error ([#200](https://github.com/meew0/discordrb/pull/200), thanks @PoVa)
+- There is now an optional field to list the parameters a command can accept ([#201](https://github.com/meew0/discordrb/pull/201), thanks @FormalHellhound)
+- Commands can now have an array of roles set that are required to be able to use it ([#178](https://github.com/meew0/discordrb/pull/178), thanks @PoVa)
+- Methods like `CommandEvent#<<` for quickly responding to an event are now available in `MessageEvent` too ([#154](https://github.com/meew0/discordrb/pull/154), thanks @hlaaftana)
+- Temporary messages, that automatically delete after some time, can now be sent to channels ([#136](https://github.com/meew0/discordrb/issues/136) / [#139](https://github.com/meew0/discordrb/pull/139), thanks @unleashy)
+- Captions can now be sent together with files, and files can be attached to events to be sent on completion ([#130](https://github.com/meew0/discordrb/pull/130), thanks @SnazzyPine25)
+- There is now a `Channel#load_message` method to get a single message by its ID ([#174](https://github.com/meew0/discordrb/pull/174), thanks @z64)
+- `Channel#define_overwrite` can now be used with a `Profile` object, together with some internal changes ([#232](https://github.com/meew0/discordrb/issues/232))
+- There are now endpoint methods to list a server's channels and channel invites ([#197](https://github.com/meew0/discordrb/pull/197))
+- Two methods, `Member#roles=` and `Member#modify_roles` to manipulate a member's roles in a more advanced way have been added ([#223](https://github.com/meew0/discordrb/pull/223), thanks @z64)
+- Role mentionability can now be set using `Role#mentionable=`
+- The current bot's OAuth application can now be read ([#175](https://github.com/meew0/discordrb/pull/175), thanks @SnazzyPine25)
+- You can now mute and deafen other members ([#157](https://github.com/meew0/discordrb/pull/157), thanks @SnazzyPine25)
+- The internal `Logger` now supports writing to a file instead of STDOUT ([#171](https://github.com/meew0/discordrb/issues/171))
+  - Building on top of that, you can also write to multiple streams at the same time now, in case you want to have input on both a file and STDOUT, or even more advanced setups. ([#217](https://github.com/meew0/discordrb/pull/217), thanks @PoVa)
+- Roles can now have their permissions bitfield set directly ([#177](https://github.com/meew0/discordrb/issues/177))
+- The `Bot#invite_url` method now supports adding permission bits into the generated URL ([#218](https://github.com/meew0/discordrb/pull/218), thanks @PoVa)
+- A utility method `User#send_file` has been added to directly send a file to a user in PM ([#168](https://github.com/meew0/discordrb/issues/168) / [#172](https://github.com/meew0/discordrb/pull/172), thanks @SnazzyPine25)
+- You can now get the list of members that have a particular role assigned using `Role#members` ([#147](https://github.com/meew0/discordrb/pull/147), thanks @hlaaftana)
+- You can now check whether a `VoiceBot` is playing right now using `#playing?` ([#137](https://github.com/meew0/discordrb/pull/137), thanks @SnazzyPine25)
+- You can now get the channel a `VoiceBot` is playing on ([#138](https://github.com/meew0/discordrb/pull/138), thanks @snapcase)
+- The permissions bit map has been updated for emoji, "Administrator" and nickname changes ([#180](https://github.com/meew0/discordrb/pull/180), thanks @megumisonoda)
+- A method `Bot#connected?` has been added to check whether the bot is currently connected to the gateway.
+- The indescriptive error message that was previously sent when calling methods like `Bot#game=` without an active gateway connection has been replaced with a more descriptive one.
+- The bot's token is now, by default, redacted from any logging output; this can be turned off if desired using the `redact_token` initialization parameter. ([#225](https://github.com/meew0/discordrb/issues/225) / [#231](https://github.com/meew0/discordrb/pull/231), thanks @Daniel-Worrall)
+- The new rate limit headers are now supported. This will have no real impact on any code using discordrb, but it means discordrb is now considered compliant again. See also [here](https://github.com/hammerandchisel/discord-api-docs/issues/108).
+- Rogue presences, i.e. presences without an associated cached member, now print a log message instead of being completely ignored
+- A variety of aliases have been added to existing methods.
+- An example to show off voice sending has been added to the repo, and existing examples have been improved.
+- A large amount of fixes and clarifications have been made to the docs.
+
+### Bugfixes
+
+- The almost a year old bug where changing the own user's username would reset its avatar has finally been fixed.
+- The issue where resolving a large server with the owner offline would sometimes cause a stack overflow has been fixed ([#169](https://github.com/meew0/discordrb/issues/169) / [#170](https://github.com/meew0/discordrb/issues/170) / [#191](https://github.com/meew0/discordrb/pull/191), thanks @stoodfarback)
+- Fixed an issue where if a server had an AFK channel set, but that AFK channel couldn't be connected to, resolving the server (and in turn all objects depending on it) would fail. This likely fixes any random `NoPermission` errors you've ever encountered in your log.
+- A message's author will be resolved over the REST API like other objects in case it's not cached yet. This should fix all instances of "Member not cached even thought it should be". ([#210](https://github.com/meew0/discordrb/pull/210), thanks @megumisonoda)
+- Voice state handling has been completely redone, fixing a variety of caching issues. ([#159](https://github.com/meew0/discordrb/issues/159))
+- Getting a voice channel's users no longer does a chunk request ([#142](https://github.com/meew0/discordrb/issues/142))
+- `Channel#define_overwrite` can now be used to define user overwrites, apparently that didn't work at all before
+- Nested command chains where an inner command doesn't exist now no longer crash the command chain handler ([#215](https://github.com/meew0/discordrb/issues/215))
+- Gateway errors should no longer spam the console ([#141](https://github.com/meew0/discordrb/issues/141) / [#148](https://github.com/meew0/discordrb/pull/148), thanks @meew0)
+- Role hoisting (both setting and reading it) should now work properly
+- The `VoiceBot#stop_playing` method should now work more predictably
+- Voice states with a nil channel should no longer crash when accessed ([#183](https://github.com/meew0/discordrb/pull/183), thanks @Apexal)
+- A latent bug in how PM channels were cached is fixed, previously they were cached twice - once by channel ID and once by recipient ID. Now they're only cached by recipient ID.
+- Two problems in how Discord outages are handled are now fixed; the bot should now no longer break when one happens. Specifically, the fixed problems are:
+  - `GUILD_DELETE` events for unavailable servers are now ignored
+  - Opcode 9 packets which are received while no session currently exists are handled correctly
+- A possible regression in PM channel creation was fixed. ([#227](https://github.com/meew0/discordrb/issues/227) / [#228](https://github.com/meew0/discordrb/pull/228), thanks @heimidal)
+
 ## 2.1.3
 
 *Bugfix-only release.*

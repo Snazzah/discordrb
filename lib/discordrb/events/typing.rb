@@ -5,6 +5,8 @@ require 'discordrb/events/generic'
 module Discordrb::Events
   # Event raised when a user starts typing
   class TypingEvent < Event
+    include Respondable
+
     # @return [Channel] the channel on which a user started typing.
     attr_reader :channel
 
@@ -23,7 +25,13 @@ module Discordrb::Events
       @channel_id = data['channel_id'].to_i
       @channel = bot.channel(@channel_id)
 
-      @user = channel.private? ? channel.recipient : bot.member(@channel.server.id, @user_id)
+      @user = if channel.pm?
+                channel.recipient
+              elsif channel.group?
+                bot.user(@user_id)
+              else
+                bot.member(@channel.server.id, @user_id)
+              end
 
       @timestamp = Time.at(data['timestamp'].to_i)
     end
@@ -39,7 +47,7 @@ module Discordrb::Events
         matches_all(@attributes[:in], event.channel) do |a, e|
           if a.is_a? String
             a.delete('#') == e.name
-          elsif a.is_a? Fixnum
+          elsif a.is_a? Integer
             a == e.id
           else
             a == e
@@ -48,7 +56,7 @@ module Discordrb::Events
         matches_all(@attributes[:from], event.user) do |a, e|
           a == if a.is_a? String
                  e.name
-               elsif a.is_a? Fixnum
+               elsif a.is_a? Integer
                  e.id
                else
                  e
